@@ -14,36 +14,45 @@ float threshold_down = 0.8; // 放下阈值
 bool isLifted = false;
 
 // 定时器
-unsigned long previousMillis = 0;
 const long interval = 1000;
 
 // 引脚定义
 const int buttonPin = 32; // 按钮引脚
 const int ledPin = 13;    // LED 引脚
 const int buzzerPin = 15; // 蜂鸣器引脚
-
+int current_exercise = 0; // 当前运动
+int total_exercise = 2; // 总运动数
 bool counting = false;    // 是否在计数状态
 bool countdownStarted = false; // 是否倒计时开始
 int countdown = 3;        // 倒计时初始值
-int rep_number = 3;      // 每组重复次数
 int currentSet = 1;       // 当前组数
-const int totalSets = 3;  // 总组数
+int totalSets[] = {3,3};  // 总组数
 bool restPeriod = false;  // 是否在休息间隔状态
 int restCountdown = 0;   // 组间休息倒计时
 bool restFinished = true; // 休息结束标志
-int resttime = 10;        // 组间休息时间
 unsigned long detectTime = 0;
 unsigned long ledTime = 0;
 bool detectState = false;
 bool ledState = false;
-const unsigned long detectDuration = 300; // Buzzer duration in milliseconds
+const unsigned long detectDuration = 300; 
 const unsigned long ledDuration = 100;    // LED blink duration in milliseconds
+unsigned long lastUpdate = 0;
 
+// Workout variables
+const char *exercises[] = {"Push-ups", "Sit-ups"};
+int weight[] = {0, 0};
+int rep_number[] = {10, 15};
+int resttime[] = {10,10};        // 组间休息时间
+
+
+// State management
+enum State { IDLE, COUNTDOWN, COUNTING, RESTING };
+State currentState = IDLE;
 
 
 constexpr uint32_t TFT_GREY = 0x5AEB; // Grey color
 TFT_eSPI tft = TFT_eSPI();
-char buffer[20]; // Buffer to hold the formatted string
+char buffer[50]; // Buffer to hold the formatted string
 
 // Network settings
 const int kNetworkTimeout = 30 * 1000; // 30 seconds timeout
@@ -95,7 +104,6 @@ void connectWiFi() {
 }
 
 void uploadData() {
-  // 上传所有数据到服务器
     WiFiClient wifiClient;
     HttpClient http(wifiClient);
     
@@ -159,9 +167,8 @@ void uploadData() {
         Serial.println(err);
     }
 
-    // Stop HTTP client
-    sensorData = ""; // 清空数据
-    datapointsNumbers = 0; // 重置数据点数
+    sensorData = ""; 
+    datapointsNumbers = 0; 
     startTime = 0; // 重置开始时间
     http.stop();
 }
@@ -192,38 +199,29 @@ void setup() {
     Serial.println("Loaded Settings.");
 
     connectWiFi();
+        snprintf(buffer, sizeof(buffer), "Next: %s weight %d", exercises[current_exercise],weight[current_exercise]); // Format the string
+    displayText(buffer);
+    Serial.println(buffer);
 
-    displayText("Ready");
-
-  // 初始化引脚
   pinMode(buttonPin, INPUT_PULLUP);
   pinMode(ledPin, OUTPUT);
   pinMode(buzzerPin, OUTPUT);
-
-
-
-
 }
 
-void loop() {
+void handleIdle() {   
+    if (digitalRead(buttonPin) == LOW) {
+        countdown = 3;
+        currentState = COUNTDOWN;
+        Serial.println("Countdown started...");
+        displayText("Countdown started...");
+        lastUpdate = millis();
+    }
+}
 
-  unsigned long currentMillis = millis();
-
-  // 检查按钮状态
-  if (!counting && !restPeriod && digitalRead(buttonPin) == LOW) {
-    countdownStarted = true;
-    restFinished = true; // 休息结束
-    countdown = 3; // 重置倒计时
-    Serial.println("Countdown started...");
-    displayText("Countdown started...");
-    delay(300); // 简单防抖
-  }
-
-  // 倒计时逻辑
-  if (countdownStarted) {
-    unsigned long currentMillis = millis();
-    if (currentMillis - previousMillis >= interval) {
-      previousMillis = currentMillis;
+void handleCountdown() {
+   unsigned long currentMillis = millis();
+    if (currentMillis - lastUpdate >= interval) {
+      lastUpdate = currentMillis;
 
       if (countdown > 0) {
         // 倒计时蜂鸣器提示
@@ -232,7 +230,7 @@ void loop() {
         snprintf(buffer, sizeof(buffer), "Countdown:  %d", countdown); // Format the string
         displayText(buffer); // Pass the formatted string to the display function
         if (countdown == 1){
-        tone(buzzerPin, 2500, 750); // 蜂鸣器短响 200ms
+        tone(buzzerPin, 2500, 750); 
       }
       else{
         tone(buzzerPin, 1000, 500); 
@@ -244,12 +242,15 @@ void loop() {
         counting = true;
         Serial.println("Start counting!");
         displayText("Start counting!");
+        currentState = COUNTING;
       }
     }
     return; // 倒计时进行时，跳过其他逻辑
   }
 
-  if (counting) {
+void handleCounting()
+ {
+
     // 获取加速度数据
     float accelX = myIMU.readFloatAccelX();
     float accelY = myIMU.readFloatAccelY();
@@ -314,7 +315,7 @@ void loop() {
 
 
     // 检查是否达到组内重复次数
-    if (liftCount >= rep_number) {
+    if (liftCount >= rep_number[current_exercise]) {
       delay(100); // 防抖
       Serial.print("Completed ");
       Serial.print(currentSet);
@@ -323,34 +324,44 @@ void loop() {
       displayText(buffer); // Pass the formatted string to the display function
       
       tone(buzzerPin, 3000, 2000); // 长响 2 秒
-      delay(3000);
       noTone(buzzerPin); // 停止蜂鸣器
       uploadData(); // 上传数据
 
       liftCount = 0;    // 重置计数器
-      counting = false; // 停止计数
 
       // 判断是否完成所有组
-      if (currentSet >= totalSets) {
+      if (currentSet >= totalSets[current_exercise]) {
+        uploadData(); // 上传数据
+
+        if(current_exercise>=total_exercise){
         Serial.println("All sets completed! Well done!");
         displayText("All sets completed! Well done!");
         while (true); // 训练结束，程序停止
+        }
+        else{
+        current_exercise++; // 进入下一个运动 
+        currentSet =0;
+        currentState = IDLE; // 回到空闲状态
+        snprintf(buffer, sizeof(buffer), "Next: %s weight %d", exercises[current_exercise],weight[current_exercise]); // Format the string
+        displayText(buffer);
+        }
       } else {
-        restPeriod = true;      // 进入休息状态
+        currentState = RESTING; 
         restFinished = false;   
-        restCountdown = resttime;     // 重置休息倒计时
+        restCountdown = resttime[current_exercise];     // 重置休息倒计时
         currentSet++;           // 增加组数
+        lastUpdate = millis();  // 重置时间
       }
     }
 
     delay(20); // 采样间隔 20ms
   }
 
-  // 休息逻辑
-  if (restPeriod or !restFinished) {
-    unsigned long currentMillis = millis();
-    if (currentMillis - previousMillis >= interval) {
-      previousMillis = currentMillis;
+void handleResting()
+{
+   unsigned long currentMillis = millis();
+    if (currentMillis - lastUpdate >= interval) {
+      lastUpdate = currentMillis;
 
       if (restCountdown > 0) {
         // 组间休息提示
@@ -358,18 +369,36 @@ void loop() {
         Serial.println(restCountdown);
         snprintf(buffer, sizeof(buffer), "Rest time:  %d", restCountdown); // Format the string
         displayText(buffer); 
-        if (restCountdown % 5 == 0) { // 每 5 秒蜂鸣器提示
-          //tone(buzzerPin, 1000, 200); // 短响 200ms
-          delay(200); // 防止蜂鸣器连续响
-        }
         restCountdown--;
       } else {
-        // 休息结束，等待用户按下按钮开始下一组
         tone(buzzerPin, 1750,100 );
-        restPeriod = false;
         Serial.println("Rest finished. Press button to start next set.");
         displayText("Rest finished. Press button to start next set.");
+        currentState = IDLE;
       }
     }
   }
+
+
+
+void loop() {
+    unsigned long currentMillis = millis();
+
+    switch (currentState) {
+        case IDLE:
+            handleIdle();
+            break;
+        case COUNTDOWN:
+            handleCountdown();
+            break;
+        case COUNTING:
+            handleCounting();
+            break;
+        case RESTING:
+            handleResting();
+            break;
+    }
 }
+
+
+
