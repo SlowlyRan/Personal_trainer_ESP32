@@ -1,23 +1,34 @@
 #include "SparkFunLSM6DSO.h"
 #include "Wire.h"
-#include <TFT_eSPI.h> // Graphics and font library for ST7735 driver chip
+#include <TFT_eSPI.h> 
 #include <SPI.h>
-#include <Arduino.h>         // Provides Arduino framework functions and macros for the ESP32.
-#include <HttpClient.h>       // HTTP client library for making HTTP requests.
+#include <Arduino.h>        
+#include <HttpClient.h>       
 #include <WiFi.h>         
+#include <String.h>
 
-// 加速度计参数
+
+struct Exercise {
+  String name;
+  float weight;  
+  int sets;      
+  int reps_per_set; 
+  int rest_time;  
+};
+
 LSM6DSO myIMU;
 int liftCount = 0;
-float threshold_up = 1.1; // 举起阈值
-float threshold_down = 0.8; // 放下阈值
+float threshold_up = 1.1; 
+float threshold_down = 0.8; 
 bool isLifted = false;
-
-// 定时器
+#define MAX_WORKOUTS 10
+String plan_id;  
+Exercise workouts[MAX_WORKOUTS];  
+int workout_count = 0;            
 const long interval = 1000;
 
-// 引脚定义
-const int buttonPin = 32; // 按钮引脚
+
+const int buttonPin = 32; 
 const int ledPin = 13;    // LED 引脚
 const int buzzerPin = 15; // 蜂鸣器引脚
 int current_exercise = 0; // 当前运动
@@ -26,23 +37,17 @@ bool counting = false;    // 是否在计数状态
 bool countdownStarted = false; // 是否倒计时开始
 int countdown = 3;        // 倒计时初始值
 int currentSet = 1;       // 当前组数
-int totalSets[] = {3,3};  // 总组数
-bool restPeriod = false;  // 是否在休息间隔状态
-int restCountdown = 0;   // 组间休息倒计时
+int restCountdown = 0;   
 bool restFinished = true; // 休息结束标志
 unsigned long detectTime = 0;
 unsigned long ledTime = 0;
 bool detectState = false;
 bool ledState = false;
 const unsigned long detectDuration = 300; 
-const unsigned long ledDuration = 100;    // LED blink duration in milliseconds
+const unsigned long ledDuration = 100;    
 unsigned long lastUpdate = 0;
 
-// Workout variables
-const char *exercises[] = {"Push-ups", "Sit-ups"};
-int weight[] = {0, 0};
-int rep_number[] = {10, 15};
-int resttime[] = {10,10};        // 组间休息时间
+
 
 
 // State management
@@ -52,7 +57,7 @@ State currentState = IDLE;
 
 constexpr uint32_t TFT_GREY = 0x5AEB; // Grey color
 TFT_eSPI tft = TFT_eSPI();
-char buffer[50]; // Buffer to hold the formatted string
+char buffer[70]; // Buffer to hold the formatted string
 
 // Network settings
 const int kNetworkTimeout = 30 * 1000; // 30 seconds timeout
@@ -62,13 +67,15 @@ const int kNetworkDelay = 1000; // Delay before retrying the connection
 const char kHostname[] = "35.232.27.80"; 
 const int kPort = 5000;                  
 const char kPath[] = "/spt/upload";  
+const char pPath[] = "/spt/plan";  
 const char contentType[] = "text/plain";
-int device_id = 3;
+int device_id = 1;
 
 
-String sensorData = "";  // 用来存储每个set的数据
-unsigned long startTime = 0; // 记录运动开始的时间
-int datapointsNumbers = 0; // 记录每个set的数据点数
+String sensorData = ""; 
+unsigned long startTime = 0; 
+int datapointsNumbers = 0; 
+
 
 
 
@@ -103,28 +110,34 @@ void connectWiFi() {
     Serial.println(WiFi.macAddress());
 }
 
+
 void uploadData() {
     WiFiClient wifiClient;
     HttpClient http(wifiClient);
-    
-    char postData[20]; 
-    snprintf(postData, sizeof(postData), "%d,%d\n",device_id, datapointsNumbers); // Format the string
+    String plan_id2="A64gD";
+    char postData[50]; 
+    snprintf(postData, sizeof(postData), "%d,%d\n",
+    device_id, datapointsNumbers);
+    char postData2[200]; 
+    snprintf(postData2, sizeof(postData), "%d,%d,%s,%d,%s,%d,%d,%.2f\n",
+             device_id, datapointsNumbers, plan_id, current_exercise,
+             workouts[current_exercise].name, currentSet,
+             workouts[current_exercise].reps_per_set, workouts[current_exercise].weight);
+    Serial.println(postData2);
+
 
     http.beginRequest();
-
 
     int err = http.post(kHostname, kPort, kPath);
     if (err == 0) {
         Serial.println("Started HTTP request");
 
-        http.sendHeader("Content-Type", contentType); // 发送 Content-Type 头部
-        http.sendHeader("Content-Length", sensorData.length() + strlen(postData)); // 发送 Content-Length 头部
-        http.print(postData); // 发送数据
+        http.sendHeader("Content-Type", contentType); 
+        http.sendHeader("Content-Length", sensorData.length() + strlen(postData2)); 
+        http.print(postData2); 
         Serial.println(postData);
-        http.print(sensorData); // 发送数据
-        http.endRequest(); // 结束请求
-        Serial.print(datapointsNumbers);
-
+        http.print(sensorData); 
+        http.endRequest(); 
         Serial.println("Request sent successfully.");
 
         // Get response status code
@@ -169,8 +182,131 @@ void uploadData() {
 
     sensorData = ""; 
     datapointsNumbers = 0; 
-    startTime = 0; // 重置开始时间
+    startTime = 0; 
     http.stop();
+}
+
+String downloadData() {
+    WiFiClient wifiClient;
+    HttpClient http(wifiClient);
+    String responseBody = "";
+
+
+    char postData[5]; 
+    snprintf(postData, sizeof(postData), "%d\n",device_id);
+
+    http.beginRequest();
+
+    int err = http.post(kHostname, kPort, pPath);
+    if (err == 0) {
+        Serial.println("Started HTTP request");
+
+        http.sendHeader("Content-Type", contentType);
+        http.sendHeader("Content-Length", strlen(postData));
+        
+        http.print(postData);
+        Serial.println(postData);
+        http.endRequest();
+        Serial.println("Request sent successfully.");
+
+        err = http.responseStatusCode();
+        if (err >= 0) {
+            Serial.print("Response code: ");
+            Serial.println(err);
+
+            err = http.skipResponseHeaders();
+            if (err >= 0) {
+                int bodyLen = http.contentLength();
+                Serial.print("Content length: ");
+                Serial.println(bodyLen);
+
+                unsigned long timeoutStart = millis();
+
+                while ((http.connected() || http.available()) && ((millis() - timeoutStart) < kNetworkTimeout)) {
+                    if (http.available()) {
+                        char c = http.read();
+                        responseBody += c;
+                        timeoutStart = millis(); 
+                    } else {
+                        delay(kNetworkDelay); 
+                    }
+                }
+
+                Serial.println("Response body: ");
+                Serial.println(responseBody);
+            } else {
+                Serial.print("Failed to skip headers: ");
+                Serial.println(err);
+            }
+        } else {
+            Serial.print("Failed to get response status: ");
+            Serial.println(err);
+        }
+    } else {
+        Serial.print("Failed to connect: ");
+        Serial.println(err);
+    }
+
+
+
+    http.stop();
+    return responseBody;
+}
+
+
+
+
+void parseWorkouts(String data) {
+  int startIndex = 0;
+  int endIndex = data.indexOf(',');
+  
+  plan_id = data.substring(startIndex, endIndex);
+  startIndex = endIndex + 1;
+  endIndex = data.indexOf(',', startIndex);
+  workout_count = data.substring(startIndex,endIndex).toInt();
+  Serial.println(workout_count);  
+  startIndex = endIndex + 1;
+
+  
+  for (int i = 0; i < workout_count; i++) {
+      endIndex = data.indexOf(',', startIndex);
+      String name = data.substring(startIndex, endIndex);
+      startIndex = endIndex + 1;
+      endIndex = data.indexOf(',', startIndex);
+      float weight = data.substring(startIndex, endIndex).toFloat();
+      startIndex = endIndex + 1;
+      endIndex = data.indexOf(',', startIndex);
+      int sets = data.substring(startIndex, endIndex).toInt();
+      startIndex = endIndex + 1;
+      endIndex = data.indexOf(',', startIndex);
+      int reps_per_set = data.substring(startIndex, endIndex).toInt();
+      startIndex = endIndex + 1;
+      endIndex = data.indexOf(',', startIndex);
+      int rest_time = data.substring(startIndex, endIndex).toInt();
+      startIndex = endIndex + 1;
+
+      workouts[i] = {name, weight, sets, reps_per_set, rest_time};
+    
+}}
+
+void printWorkouts() {
+  Serial.print("Plan ID: ");
+  Serial.println(plan_id);
+  Serial.print("Workout Count: ");
+  Serial.println(workout_count);
+  
+  for (int i = 0; i < workout_count; i++) {
+    Serial.print("Workout: ");
+    Serial.print(workouts[i].name);
+    Serial.print(", Duration: ");
+    Serial.print(workouts[i].weight);
+    Serial.print(", Sets: ");
+    Serial.print(workouts[i].sets);
+    Serial.print(", Reps per set: ");
+    Serial.print(workouts[i].reps_per_set);
+    Serial.print(", Rest time: ");
+    Serial.println(workouts[i].rest_time);
+  }
 }
 
 
@@ -199,16 +335,26 @@ void setup() {
     Serial.println("Loaded Settings.");
 
     connectWiFi();
-        snprintf(buffer, sizeof(buffer), "Next: %s weight %d", exercises[current_exercise],weight[current_exercise]); // Format the string
-    displayText(buffer);
-    Serial.println(buffer);
+
 
   pinMode(buttonPin, INPUT_PULLUP);
   pinMode(ledPin, OUTPUT);
   pinMode(buzzerPin, OUTPUT);
+
+  String input_data = downloadData();
+  
+  parseWorkouts(input_data);
+  
+  printWorkouts();
+  snprintf(buffer, sizeof(buffer), "Next: %s   weight %.2f ,press the button when you are ready", workouts[current_exercise].name,workouts[current_exercise].weight); 
+  displayText(buffer);
+  lastUpdate = millis();
+  Serial.println(buffer);
 }
 
 void handleIdle() {   
+    unsigned long currentMillis = millis();
+
     if (digitalRead(buttonPin) == LOW) {
         countdown = 3;
         currentState = COUNTDOWN;
@@ -216,6 +362,14 @@ void handleIdle() {
         displayText("Countdown started...");
         lastUpdate = millis();
     }
+    if (currentMillis - lastUpdate >= interval) {
+          tone(buzzerPin, 1750,200);
+          lastUpdate = currentMillis;
+          noTone(buzzerPin); 
+          
+    }
+    
+
 }
 
 void handleCountdown() {
@@ -224,20 +378,18 @@ void handleCountdown() {
       lastUpdate = currentMillis;
 
       if (countdown > 0) {
-        // 倒计时蜂鸣器提示
         Serial.print("Countdown: ");
         Serial.println(countdown);
         snprintf(buffer, sizeof(buffer), "Countdown:  %d", countdown); // Format the string
         displayText(buffer); // Pass the formatted string to the display function
         if (countdown == 1){
-        tone(buzzerPin, 2500, 750); 
+        tone(buzzerPin, 2500, 500); 
       }
       else{
         tone(buzzerPin, 1000, 500); 
       }
         countdown--;
       } else {
-        // 倒计时结束，进入计数状态
         countdownStarted = false;
         counting = true;
         Serial.println("Start counting!");
@@ -245,13 +397,12 @@ void handleCountdown() {
         currentState = COUNTING;
       }
     }
-    return; // 倒计时进行时，跳过其他逻辑
+    return; 
   }
 
 void handleCounting()
  {
 
-    // 获取加速度数据
     float accelX = myIMU.readFloatAccelX();
     float accelY = myIMU.readFloatAccelY();
     float accelZ = myIMU.readFloatAccelZ();
@@ -260,44 +411,39 @@ void handleCounting()
     float gyroZ = myIMU.readFloatGyroZ();
     unsigned long currentMillis = millis();
     if (startTime == 0) {
-      startTime = currentMillis; // 记录运动开始的时间
+      startTime = currentMillis; 
     }
     unsigned long elapsedTime = currentMillis - startTime;
-    char dataStr[80];  // 用于存储格式化后的加速度数据
-    Serial.print("Elapsed Time: ");
-    Serial.println(elapsedTime);
+    char dataStr[80];  
+    //Serial.print("Elapsed Time: ");
+    //Serial.println(elapsedTime);
 
     snprintf(dataStr, sizeof(dataStr), "%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%d\n",accelX, accelY, accelZ,gyroX, gyroY, gyroZ,elapsedTime); // Format the string
-    sensorData += dataStr; // 将数据添加到sensorData中  
-    datapointsNumbers++; // 记录数据点数
-    Serial.print("Data: ");
-    Serial.println(dataStr);
+    sensorData += dataStr;  
+    datapointsNumbers++; 
+   
     
     float accel = max(max(abs(accelX), abs(accelY)), abs(accelZ));
 
 
-    // 判断是否大于阈值，表示举起
     if (accel > threshold_up && !isLifted) {
-    //if (accel < threshold_down && isLifted) {
-      isLifted = true; // 标记为举起状态
+      isLifted = true; 
       Serial.println("Lifted");
     }
 
-    // 判断是否恢复到接近重力加速度，表示放下
     if (accel < threshold_down && isLifted) {
-    //if (accel > threshold_up && !isLifted) {
-      isLifted = false; // 标记为放下状态
-      liftCount++;      // 增加动作计数
+      isLifted = false; 
+      liftCount++;      
       Serial.println("Put Down");
       Serial.print("Lift Count: ");
       Serial.println(liftCount);
 
-      snprintf(buffer, sizeof(buffer), "Finised:  %d reps", liftCount); // Format the string
+      snprintf(buffer, sizeof(buffer), "Finised:  %d    reps", liftCount); // Format the string
       displayText(buffer); // Pass the formatted string to the display function
       detectState = true;
       detectTime = currentMillis;
 
-      tone(buzzerPin, 1000, 100); // 蜂鸣器短响 200ms
+      tone(buzzerPin, 1000, 100); 
 
       ledState = true;
       ledTime = currentMillis;
@@ -307,54 +453,53 @@ void handleCounting()
     detectState = false;}
 
    if (ledState && currentMillis - ledTime < ledDuration) {
-    digitalWrite(ledPin, HIGH); // 点亮LED
+    digitalWrite(ledPin, HIGH); 
   } else if (ledState && currentMillis - ledTime >= ledDuration) {
-    digitalWrite(ledPin, LOW); // 熄灭LED
-    ledState = false;      // 停止LED闪烁
+    digitalWrite(ledPin, LOW); 
+    ledState = false;      
   }
 
 
-    // 检查是否达到组内重复次数
-    if (liftCount >= rep_number[current_exercise]) {
-      delay(100); // 防抖
+    if (liftCount >= workouts[current_exercise].reps_per_set) {
+      delay(100); 
       Serial.print("Completed ");
       Serial.print(currentSet);
       Serial.println(" set(s)!");
-      snprintf(buffer, sizeof(buffer), "Completed  %d sets", currentSet); // Format the string
-      displayText(buffer); // Pass the formatted string to the display function
+      snprintf(buffer, sizeof(buffer), "Completed     %d sets", currentSet); 
+      displayText(buffer); 
       
-      tone(buzzerPin, 3000, 2000); // 长响 2 秒
-      noTone(buzzerPin); // 停止蜂鸣器
-      uploadData(); // 上传数据
+      tone(buzzerPin, 3000, 2000); 
+      noTone(buzzerPin); 
+      uploadData(); 
 
-      liftCount = 0;    // 重置计数器
+      liftCount = 0;   
 
-      // 判断是否完成所有组
-      if (currentSet >= totalSets[current_exercise]) {
-        uploadData(); // 上传数据
+      if (currentSet >= workouts[current_exercise].sets) {
 
-        if(current_exercise>=total_exercise){
+        if(current_exercise>=workout_count-1){
+        Serial.print(currentSet);
         Serial.println("All sets completed! Well done!");
         displayText("All sets completed! Well done!");
-        while (true); // 训练结束，程序停止
+        while (true); 
         }
         else{
-        current_exercise++; // 进入下一个运动 
-        currentSet =0;
-        currentState = IDLE; // 回到空闲状态
-        snprintf(buffer, sizeof(buffer), "Next: %s weight %d", exercises[current_exercise],weight[current_exercise]); // Format the string
+        current_exercise++; 
+        currentSet =1;
+        currentState = IDLE; 
+        snprintf(buffer, sizeof(buffer), "Next: %s   weight %.2f ,press the button when you are ready", workouts[current_exercise].name,workouts[current_exercise].weight); // Format the string
         displayText(buffer);
         }
-      } else {
+      }
+       else {
         currentState = RESTING; 
         restFinished = false;   
-        restCountdown = resttime[current_exercise];     // 重置休息倒计时
-        currentSet++;           // 增加组数
-        lastUpdate = millis();  // 重置时间
+        restCountdown = workouts[current_exercise].rest_time;    
+        currentSet++;           
+        lastUpdate = millis();  
       }
     }
 
-    delay(20); // 采样间隔 20ms
+    delay(20); 
   }
 
 void handleResting()
@@ -364,20 +509,22 @@ void handleResting()
       lastUpdate = currentMillis;
 
       if (restCountdown > 0) {
-        // 组间休息提示
         Serial.print("Rest time: ");
         Serial.println(restCountdown);
         snprintf(buffer, sizeof(buffer), "Rest time:  %d", restCountdown); // Format the string
         displayText(buffer); 
         restCountdown--;
       } else {
-        tone(buzzerPin, 1750,100 );
+        tone(buzzerPin, 1750,100);
         Serial.println("Rest finished. Press button to start next set.");
         displayText("Rest finished. Press button to start next set.");
         currentState = IDLE;
       }
     }
   }
+
+
+
 
 
 
